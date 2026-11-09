@@ -286,6 +286,11 @@ export class Client extends GameShell {
     private loginUser: string = '';
     private loginPass: string = '';
 
+    // Idlescape: the only way in is Discord. A session cookie mints a single-use game login token.
+    private discordSession: { username: string; token: string } | null = null;
+    private discordSessionRequested: boolean = false;
+    private discordLoginAttempted: boolean = false;
+
     private imageRunes: Pix8[] = [];
     private titleFlames: TitleFlames | null = null;
 
@@ -1376,22 +1381,23 @@ export class Client extends GameShell {
     }
 
     private async titleScreenLoop(): Promise<void> {
+        if (!this.discordSessionRequested) {
+            this.discordSessionRequested = true;
+            void this.loadDiscordSession();
+        }
+
+        if (this.discordSession && !this.discordLoginAttempted) {
+            this.discordLoginAttempted = true;
+            await this.login(this.discordSession.username, this.discordSession.token, false);
+            return;
+        }
+
         if (this.loginscreen === 0) {
-            let x: number = ((this.sWid / 2) | 0) - 80;
-            let y: number = ((this.sHei / 2) | 0) + 20;
+            const x: number = (this.sWid / 2) | 0;
+            const y: number = ((this.sHei / 2) | 0) + 40;
 
-            y += 20;
             if (this.mouseClickButton === 1 && this.mouseClickX >= x - 75 && this.mouseClickX <= x + 75 && this.mouseClickY >= y - 20 && this.mouseClickY <= y + 20) {
-                this.loginscreen = 3;
-                this.loginSelect = 0;
-            }
-
-            x = ((this.sWid / 2) | 0) + 80;
-            if (this.mouseClickButton === 1 && this.mouseClickX >= x - 75 && this.mouseClickX <= x + 75 && this.mouseClickY >= y - 20 && this.mouseClickY <= y + 20) {
-                this.loginMes1 = '';
-                this.loginMes2 = 'Enter your username & password.';
-                this.loginscreen = 2;
-                this.loginSelect = 0;
+                window.location.href = '/auth/discord';
             }
         } else if (this.loginscreen === 2) {
             let y: number = ((this.sHei / 2) | 0) - 40;
@@ -1475,14 +1481,6 @@ export class Client extends GameShell {
                     }
                 }
             }
-        } else if (this.loginscreen === 3) {
-            const x: number = (this.sWid / 2) | 0;
-            let y: number = ((this.sHei / 2) | 0) + 50;
-
-            y += 20;
-            if (this.mouseClickButton === 1 && this.mouseClickX >= x - 75 && this.mouseClickX <= x + 75 && this.mouseClickY >= y - 20 && this.mouseClickY <= y + 20) {
-                this.loginscreen = 0;
-            }
         }
     }
 
@@ -1502,17 +1500,21 @@ export class Client extends GameShell {
                 this.p11?.centreStringTag(this.onDemand.message, w / 2, extraY, 0x75a9a9, true);
             }
 
-            this.b12?.centreStringTag('Welcome to RuneScape', w / 2, y, Colour.YELLOW, true);
+            this.b12?.centreStringTag('Welcome to Idlescape', w / 2, y, Colour.YELLOW, true);
             y += 30;
 
-            let x = ((w / 2) | 0) - 80;
-            y = ((h / 2) | 0) + 20;
+            const x = (w / 2) | 0;
+            y = ((h / 2) | 0) + 40;
             this.imageTitlebutton?.plotSprite(x - 73, y - 20);
-            this.b12?.centreStringTag('New User', x, y + 5, Colour.WHITE, true);
+            this.b12?.centreStringTag('Login with Discord', x, y + 5, Colour.WHITE, true);
 
-            x = ((w / 2) | 0) + 80;
-            this.imageTitlebutton?.plotSprite(x - 73, y - 20);
-            this.b12?.centreStringTag('Existing User', x, y + 5, Colour.WHITE, true);
+            // Idlescape: there is no username/password screen, so surface login progress and errors here.
+            if (this.loginMes1.length > 0) {
+                this.b12?.centreStringTag(this.loginMes1, x, y + 30, Colour.YELLOW, true);
+                this.b12?.centreStringTag(this.loginMes2, x, y + 45, Colour.YELLOW, true);
+            } else if (this.loginMes2.length > 0) {
+                this.b12?.centreStringTag(this.loginMes2, x, y + 30, Colour.YELLOW, true);
+            }
         } else if (this.loginscreen === 2) {
             let x: number = ((w / 2) | 0) - 80;
             let y: number = ((h / 2) | 0) - 40;
@@ -1537,28 +1539,6 @@ export class Client extends GameShell {
             this.b12?.centreStringTag('Login', x, y + 5, Colour.WHITE, true);
 
             x = ((w / 2) | 0) + 80;
-            this.imageTitlebutton?.plotSprite(x - 73, y - 20);
-            this.b12?.centreStringTag('Cancel', x, y + 5, Colour.WHITE, true);
-        } else if (this.loginscreen === 3) {
-            let x: number = (w / 2) | 0;
-            let y: number = ((h / 2) | 0) - 60;
-            this.b12?.centreStringTag('Create a free account', x, y, Colour.YELLOW, true);
-
-            y = ((h / 2) | 0) - 35;
-            this.b12?.centreStringTag('To create a new account you need to', x, y, Colour.WHITE, true);
-            y += 15;
-
-            this.b12?.centreStringTag('go back to the main RuneScape webpage', x, y, Colour.WHITE, true);
-            y += 15;
-
-            this.b12?.centreStringTag("and choose the red 'create account'", x, y, Colour.WHITE, true);
-            y += 15;
-
-            this.b12?.centreStringTag('button at the top right of that page.', x, y, Colour.WHITE, true);
-            y += 15;
-
-            x = (w / 2) | 0;
-            y = ((h / 2) | 0) + 50;
             this.imageTitlebutton?.plotSprite(x - 73, y - 20);
             this.b12?.centreStringTag('Cancel', x, y + 5, Colour.WHITE, true);
         }
@@ -1714,6 +1694,17 @@ export class Client extends GameShell {
                 this.titleFlames.start();
             }
         });
+    }
+
+    private async loadDiscordSession(): Promise<void> {
+        try {
+            const res: Response = await fetch('/auth/session', { credentials: 'same-origin' });
+            if (res.ok) {
+                this.discordSession = await res.json();
+            }
+        } catch (e) {
+            console.error('failed to read Discord session', e);
+        }
     }
 
     private async login(username: string, password: string, reconnect: boolean): Promise<void> {
