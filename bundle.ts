@@ -5,11 +5,10 @@ import { minify } from 'terser';
 
 import { nth_identifier } from './identifier.js';
 
+// The RSA constants used to live here as a build-time copy of the engine's key. The client now reads
+// them from /publickey instead, so there is only one copy and rotating the key needs no rebuild.
 const define = {
     'process.env.SECURE_ORIGIN': JSON.stringify(process.env.SECURE_ORIGIN ?? 'false'),
-    // original key, used 2003-2010
-    'process.env.LOGIN_RSAE': JSON.stringify(process.env.LOGIN_RSAE ?? '58778699976184461502525193738213253649000149147835990136706041084440742975821'),
-    'process.env.LOGIN_RSAN': JSON.stringify(process.env.LOGIN_RSAN ?? '7162900525229798032761816791230527296329313291232324290237849263501208207972894053929065636522363163621000728841182238772712427862772219676577293600221789'),
     'process.env.BUILD_TIME': JSON.stringify(new Date().toISOString())
 };
 
@@ -112,6 +111,12 @@ async function applyTerser(script: BunOutput): Promise<boolean> {
                     // dns-json response fields
                     'Status',
                     'Answer',
+
+                    // engine json responses (they are read by name, so they must not be mangled)
+                    'modulus',
+                    'exponent',
+                    'username',
+                    'token',
 
                     // main thread <-> ondemand worker protocol
                     'type',
