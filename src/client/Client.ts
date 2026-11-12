@@ -286,10 +286,10 @@ export class Client extends GameShell {
     private loginUser: string = '';
     private loginPass: string = '';
 
-    // Idlescape: the only way in is Discord. A session cookie mints a single-use game login token.
-    private discordSession: { username: string; token: string } | null = null;
-    private discordSessionRequested: boolean = false;
-    private discordLoginAttempted: boolean = false;
+    // Idlescape: the only way in is Discord, and the game token is single use, so every login attempt
+    // mints a new one. `loginAttempted` only stops the title screen retrying in a loop.
+    private loginAttempted: boolean = false;
+    private loginRetries: number = 0;
 
     // The server owns the login keypair; these come from /publickey.
     private loginRsaN: bigint | null = null;
@@ -1427,14 +1427,12 @@ export class Client extends GameShell {
     }
 
     private async titleScreenLoop(): Promise<void> {
-        if (!this.discordSessionRequested) {
-            this.discordSessionRequested = true;
-            void this.loadDiscordSession();
-        }
-
-        if (this.discordSession && !this.discordLoginAttempted) {
-            this.discordLoginAttempted = true;
-            await this.login(this.discordSession.username, this.discordSession.token, false);
+        if (!this.loginAttempted) {
+            // Idlescape: the page only loads with a Discord session, so being on the title screen with
+            // no attempt in flight means we should be playing. This is also what brings a player back
+            // after they press Logout.
+            this.loginAttempted = true;
+            await this.login('', '', false);
             return;
         }
 
@@ -1443,13 +1441,8 @@ export class Client extends GameShell {
             const y: number = ((this.sHei / 2) | 0) + 40;
 
             if (this.mouseClickButton === 1 && this.mouseClickX >= x - 75 && this.mouseClickX <= x + 75 && this.mouseClickY >= y - 20 && this.mouseClickY <= y + 20) {
-                if (this.discordSession) {
-                    // The page only loads with a Discord session, so this is a reconnect: the token
-                    // is already in hand and no redirect is needed.
-                    this.discordLoginAttempted = false;
-                } else {
-                    void this.loadDiscordSession();
-                }
+                // retry: the previous attempt failed (bad token, server busy, already logged in)
+                this.loginAttempted = false;
             }
         } else if (this.loginscreen === 2) {
             let y: number = ((this.sHei / 2) | 0) - 40;
@@ -1750,23 +1743,41 @@ export class Client extends GameShell {
         });
     }
 
-    private async loadDiscordSession(): Promise<void> {
+    private async mintGameToken(): Promise<{ username: string; token: string } | null> {
         try {
             const res: Response = await fetch('/discord/session', { credentials: 'same-origin' });
             if (res.ok) {
-                this.discordSession = await res.json();
-            } else if (res.status === 401) {
-                // The cookie expired between loading the page and now; ask Discord again.
+                return (await res.json()) as { username: string; token: string };
+            }
+
+            if (res.status === 401) {
+                // The browser session is gone; ask Discord again.
                 window.location.href = '/discord';
+            } else {
+                this.loginMes1 = '';
+                this.loginMes2 = `Could not get a login token (${res.status}).`;
             }
         } catch (e) {
             console.error('failed to read Discord session', e);
+            this.loginMes1 = '';
+            this.loginMes2 = 'Could not reach the login server.';
         }
+
+        return null;
     }
 
     private async login(username: string, password: string, reconnect: boolean): Promise<void> {
         try {
             if (!reconnect) {
+                // A token is spent by the login it authorises, so a retry needs a new one.
+                const session = await this.mintGameToken();
+                if (!session) {
+                    return;
+                }
+
+                username = session.username;
+                password = session.token;
+
                 this.loginMes1 = '';
                 this.loginMes2 = 'Connecting to server...';
                 await this.titleScreenDraw(true);
@@ -1842,8 +1853,9 @@ export class Client extends GameShell {
 
             if (response === 1) {
                 await sleep(2000);
-                await this.login(username, password, reconnect);
+                await this.login('', '', false);
             } else if (response === 2) {
+                this.loginRetries = 0;
                 this.staffmodlevel = await this.stream.read();
                 this.mouseTracked = (await this.stream.read()) === 1;
 
@@ -1962,6 +1974,18 @@ export class Client extends GameShell {
                 this.loginMes1 = 'Your account has been disabled.';
                 this.loginMes2 = 'Please check your message-centre for details.';
             } else if (response === 5) {
+                // Logging out and straight back in can race the world releasing the account, so give it
+                // a few seconds before giving up and leaving the player on the title screen.
+                if (this.loginRetries < 5) {
+                    this.loginRetries++;
+                    this.loginMes1 = '';
+                    this.loginMes2 = 'Still logged out...';
+                    await this.titleScreenDraw(true);
+                    await sleep(2000);
+                    await this.login('', '', false);
+                    return;
+                }
+
                 this.loginMes1 = 'Your account is already logged in.';
                 this.loginMes2 = 'Try again in 60 secs...';
             } else if (response === 6) {
@@ -2024,7 +2048,7 @@ export class Client extends GameShell {
                     await sleep(1000);
                 }
 
-                await this.login(username, password, reconnect);
+                await this.login('', '', false);
             } else if (response === -1) {
                 this.loginMes1 = 'No response from server';
                 this.loginMes2 = 'Please try using a different world.';
@@ -2553,9 +2577,11 @@ export class Client extends GameShell {
         const oldStream = this.stream;
 
         this.ingame = false;
-        await this.login(this.loginUser, this.loginPass, true);
+        // Our password is a single-use token, so this cannot be a "reconnect" with the old credentials.
+        await this.login('', '', false);
         if (!this.ingame) {
             await this.logout();
+            this.loginAttempted = false;
         }
 
         oldStream?.close();
@@ -6899,6 +6925,10 @@ export class Client extends GameShell {
 
             if (this.ptype === ServerProt.LOGOUT) {
                 await this.logout();
+
+                // Idlescape: nobody plays an idle game to be logged out, so go straight back in. The
+                // world has already released the account on a clean logout, so this re-login is instant.
+                this.loginAttempted = false;
 
                 this.ptype = -1;
                 return false;
